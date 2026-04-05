@@ -15,7 +15,7 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
-# 🎯 System prompts par agent (pour personnaliser le comportement)
+# 🎯 System prompts par agent
 SYSTEM_PROMPTS = {
     "default": "Tu es un assistant de voyage expert, utile et précis.",
     "planner": "Tu es un planificateur de voyage expert. Tu crées des itinéraires détaillés, réalistes et optimisés.",
@@ -25,63 +25,56 @@ SYSTEM_PROMPTS = {
     "export": "Tu es un expert en rédaction de documents. Tu formates les informations de manière claire et professionnelle."
 }
 
-def call_llm(prompt, agent_type="default", stream=False):
-    """
-    Appel au LLM Groq avec support optionnel du streaming.
-    
-    Args:
-        prompt: Le prompt utilisateur
-        agent_type: Type d'agent pour le system prompt (planner, transport, hotel, etc.)
-        stream: Si True, retourne un générateur pour le streaming
-    
-    Returns:
-        str ou generator: La réponse complète ou un générateur de tokens
-    """
+# ============================================================
+# ✅ VERSION NON-STREAM (corrigée)
+# ============================================================
+def call_llm(prompt, agent_type="default"):
     try:
-        if stream:
-            # Mode streaming pour affichage en temps réel
-            response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPTS.get(agent_type, SYSTEM_PROMPTS["default"])},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3,
-                stream=True
-            )
-            # Générateur qui yield chaque chunk
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-        else:
-            # Mode classique (réponse complète)
-            response = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPTS.get(agent_type, SYSTEM_PROMPTS["default"])},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.3
-            )
-            return response.choices[0].message.content
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPTS.get(agent_type, SYSTEM_PROMPTS["default"])},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
 
     except Exception as e:
-        if stream:
-            yield f"❌ Erreur LLM : {str(e)}"
-        else:
-            return f"❌ Erreur LLM : {str(e)}"
+        return f"❌ Erreur LLM : {str(e)}"
 
 
+# ============================================================
+# ✅ VERSION STREAM (nouvelle)
+# ============================================================
+def call_llm_stream(prompt, agent_type="default"):
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPTS.get(agent_type, SYSTEM_PROMPTS["default"])},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            stream=True
+        )
+
+        for chunk in response:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    except Exception as e:
+        yield f"❌ Erreur LLM : {str(e)}"
+
+
+# ============================================================
+# 🔁 RETRY (corrigé)
+# ============================================================
 def call_llm_with_retry(prompt, agent_type="default", max_retries=3):
-    """
-    Appel avec mécanisme de retry en cas d'échec.
-    """
     for i in range(max_retries):
-        try:
-            result = call_llm(prompt, agent_type, stream=False)
-            if not result.startswith("❌ Erreur"):
-                return result
-        except Exception as e:
-            if i == max_retries - 1:
-                return f"❌ Erreur après {max_retries} tentatives : {str(e)}"
-    return None
+        result = call_llm(prompt, agent_type)
+
+        if result and not result.startswith("❌"):
+            return result
+
+    return f"❌ Erreur après {max_retries} tentatives"

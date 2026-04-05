@@ -1,54 +1,108 @@
-#  Planificateur de Voyage Intelligent avec Agents IA
+# Travel Planner AI – Planificateur de Voyage Intelligent
 
-##  Objectif
-Ce projet consiste à développer une application Streamlit utilisant des agents intelligents basés sur des LLM pour planifier automatiquement un voyage.
-
----
-
-##  Architecture
-
-L'application repose sur une architecture multi-agents :
-
--  Agent 1 (Planificateur) :
-  Génère la météo, les activités et un itinéraire initial.
-
--  Agent 2 (Critique) :
-  Analyse l’itinéraire, détecte les incohérences et propose une version améliorée.
+Un projet d’IA pour créer des voyages sur mesure en utilisant plusieurs agents spécialisés et le modèle LLaMA 3.1 via Groq.
 
 ---
 
-##  Techniques de raisonnement utilisées
+## Description
 
-### ✅ Chain of Thought (CoT)
-Le modèle analyse la demande étape par étape pour structurer sa réflexion.
+Travel Planner AI permet à un utilisateur de générer un voyage personnalisé étape par étape. Le projet intègre plusieurs agents pour gérer :
 
-### ✅ ReAct (Reason + Act)
-L’agent suit une boucle :
-Analyse → Action → Observation → Amélioration
+* Les centres d’intérêt du voyageur
+* La génération d’itinéraires
+* Les options de transport
+* Les suggestions d’hébergement
+* La création de documents PDF et d’e-mails de confirmation
 
-### ✅ Tree of Thoughts (ToT)
-Plusieurs stratégies de voyage sont explorées (aventure, détente, culturel).
-
-### ✅ Multi-Agents
-Deux agents collaborent :
-- un pour générer
-- un pour critiquer et améliorer
+Le tout avec un **workflow interactif** et **streaming temps réel**.
 
 ---
 
-##  Fonctionnalités
+## Fonctionnalités
 
-- Génération automatique d’un voyage
-- Météo simulée
-- Activités adaptées
-- Itinéraire jour par jour
-- Analyse critique
-- Téléchargement du plan
+* Étape par étape : du choix de la destination à la confirmation finale
+* Génération de deux options d’itinéraire et comparaison automatique
+* Recherche de transport avec estimation du prix et durée
+* Suggestions d’hébergement selon le budget
+* Export PDF du voyage et génération d’e-mails
+* Streaming en temps réel des réponses des agents
+* Sauvegarde et réinitialisation du voyage
 
 ---
 
-##  Lancement
+## Technologies
+
+* Python 3.11+
+* [Streamlit](https://streamlit.io/) pour l’interface web
+* [Groq LLaMA 3.1](https://www.groq.com/) pour le modèle LLM
+* dotenv pour gérer les clés API
+* Fichiers `.env` pour les configurations
+
+---
+
+## Installation
+
+Installer les dépendances Python :
 
 ```bash
 pip install -r requirements.txt
+```
+
+---
+
+## Utilisation
+
+Lancer l'application Streamlit :
+
+```bash
 streamlit run app.py
+```
+
+---
+
+## Architecture du projet
+
+TravelPlannerAI/
+│
+├─ app.py              # Interface principale Streamlit
+├─ agent.py            # Agents et orchestration (profil, itinéraire, transport, hôtel, export)
+├─ prompts.py          # Prompts LLM pour chaque agent
+├─ llm.py              # Communication avec LLM Groq et gestion du streaming
+├─ utils.py            # Fonctions utilitaires (session, PDF, email, navigation)
+├─ requirements.txt    # Dépendances Python
+├─ .env                # Clés API et configuration
+└─ README.md           # Documentation du projet
+
+---
+
+## Agents utilisés
+
+* Profil agent
+* Planificateur agent
+* Transport agent
+* Hôtel agent
+* Export agent (PDF & Email)
+
+---
+
+## Streaming
+
+Toutes les réponses des agents peuvent être affichées en temps réel via le streaming pour une meilleure expérience utilisateur.
+
+---
+
+## Contribution
+
+Contributions ouvertes via pull requests sur le dépôt GitHub.
+
+---
+
+## Licence
+
+MIT License
+
+---
+
+## GitHub
+
+[https://github.com/ibrahimacoulibaly58/IA_Generatif_Projet](https://github.com/ibrahimacoulibaly58/IA_Generatif_Projet)
