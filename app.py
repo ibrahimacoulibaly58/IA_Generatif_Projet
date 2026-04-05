@@ -1,394 +1,511 @@
 import streamlit as st
-from agent import (
-    run_full_workflow,
-    stream_profile,
-    stream_itinerary,
-    stream_transport,
-    stream_hotel,
-    export_agent,
-    email_agent
-)
-from utils import (
-    init_session_state,
-    reset_session,
-    next_step,
-    prev_step,
-    display_step_indicator,
-    display_agent_thinking,
-    generate_pdf,
-    create_download_button,
-    send_email_simulation,
-    prepare_email_content
-)
+import openai
+import requests
+import json
+import re
+from datetime import datetime, timedelta
+import os
 
-# ============================================================
-# 🎨 CONFIGURATION DE LA PAGE
-# ============================================================
-st.set_page_config(
-    page_title="✈️ Travel Planner AI",
-    page_icon="🌍",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# -----------------------------------------------------------------------------
+# CONFIGURATION & UTILITAIRES
+# -----------------------------------------------------------------------------
+st.set_page_config(page_title="🌍 Planificateur de Voyage Autonome", layout="wide")
 
-# ============================================================
-# 🎯 INITIALISATION SESSION STATE
-# ============================================================
-init_session_state()
+# Sidebar : Configuration API
+st.sidebar.title("⚙️ Configuration")
+provider = st.sidebar.selectbox("🔌 Fournisseur LLM", ["groq", "openai"], index=0)
+api_key = st.sidebar.text_input("🔑 Clé API", type="password", 
+                                help="Groq: gsk_... | OpenAI: sk-...")
+if api_key:
+    st.session_state.api_key = api_key
+    os.environ["API_KEY"] = api_key  # Pour compatibilité
 
-# ============================================================
-# 🎨 SIDEBAR - INFORMATIONS & NAVIGATION
-# ============================================================
-with st.sidebar:
-    st.title("🌍 Travel Planner AI")
-    st.markdown("---")
-    
-    # Navigation rapide
-    st.subheader("📍 Navigation")
-    if st.button("🔄 Nouveau voyage", use_container_width=True, key="new_trip_sidebar"):
-        reset_session()
-        st.rerun()
-    
-    if st.session_state.step > 1:
-        if st.button("⬅️ Étape précédente", use_container_width=True, key="prev_step_sidebar"):
-            prev_step()
-            st.rerun()
-    
-    st.markdown("---")
-    
-    # Informations voyageur
-    st.subheader("👤 Voyageur")
-    st.session_state.user_name = st.text_input(
-        "Nom",
-        value=st.session_state.user_name,
-        placeholder="Votre nom",
-        key="user_name_sidebar"
+# Modèle selon le fournisseur
+MODELS = {
+    "groq": "llama-3.3-70b-versatile",  # Gratuit, performant
+    "openai": "gpt-4o-mini"  # Payant, très précis
+}
+MODEL = MODELS.get(provider, "llama-3.3-70b-versatile")
+
+# Base URL selon le fournisseur
+BASE_URLS = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openai": "https://api.openai.com/v1"
+}
+
+# -----------------------------------------------------------------------------
+# 🌤 OUTIL : Météo (Open-Meteo - Gratuit, sans clé)
+# -----------------------------------------------------------------------------
+def get_geocode(city):
+    resp = requests.get(
+        f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=fr&format=json"
     )
-    st.session_state.user_email = st.text_input(
-        "Email",
-        value=st.session_state.user_email,
-        placeholder="votre@email.com",
-        key="user_email_sidebar"
-    )
-    
-    st.markdown("---")
-    
-    # Infos techniques
-    st.subheader("ℹ️ Info")
-    st.markdown("""
-    - **LLM** : LLaMA 3.1 via Groq
-    - **Agents** : 6 agents spécialisés
-    - **Streaming** : Oui
-    """)
+    data = resp.json()
+    if not data.get("results"):
+        raise ValueError(f"Ville '{city}' introuvable.")
+    return data["results"][0]
 
-# ============================================================
-# 🎯 CONTENU PRINCIPAL
-# ============================================================
-st.title("✈️ Planificateur de Voyage Intelligent")
-st.markdown("### Créez votre voyage sur mesure avec l'IA 🤖")
+def get_weather(city, start_date, end_date):
+    loc = get_geocode(city)
+    lat, lon = loc["latitude"], loc["longitude"]
+    url = (f"https://api.open-meteo.com/v1/forecast?"
+           f"latitude={lat}&longitude={lon}"
+           f"&daily=temperature_2m_max,temperature_2m_min,weathercode,precipitation_sum"
+           f"&start_date={start_date}&end_date={end_date}&timezone=auto")
+    resp = requests.get(url).json()
+    daily = resp.get("daily", {})
+    return {
+        "city": city,
+        "dates": daily.get("time", []),
+        "temp_max": daily.get("temperature_2m_max", []),
+        "temp_min": daily.get("temperature_2m_min", []),
+        "weather_code": daily.get("weathercode", []),
+        "precipitation": daily.get("precipitation_sum", [])
+    }
 
-# Barre de progression des étapes
-display_step_indicator(st.session_state.step)
-st.markdown("---")
+def weather_code_to_desc(code):
+    codes = {
+        0: "☀️ Ensoleillé", 1: "🌤 Peu nuageux", 2: "⛅ Partiellement nuageux", 
+        3: "☁️ Couvert", 45: "🌫 Brouillard", 51: "🌦 Bruine", 
+        61: "🌧 Pluie légère", 71: "❄️ Neige", 80: "⛈ Averses", 95: "⚡ Orage"
+    }
+    return codes.get(code, "🌪 Conditions variables")
 
-# ============================================================
-# 📋 ÉTAPE 1 : INFORMATIONS DE VOYAGE
-# ============================================================
-if st.session_state.step == 1:
-    st.header("📋 Étape 1 : Informations de voyage")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.session_state.destination = st.text_input(
-            "🌍 Destination",
-            value=st.session_state.destination,
-            placeholder="Ex: Paris, Tokyo, New York...",
-            key="destination_step1"
-        )
-        st.session_state.origin = st.text_input(
-            "🛫 Lieu de départ",
-            value=st.session_state.origin,
-            placeholder="Ex: France, Paris, Lyon...",
-            key="origin_step1"
-        )
-    
-    with col2:
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            st.session_state.start_date = st.date_input(
-                "📅 Date de départ",
-                value=st.session_state.start_date,
-                key="start_date_step1"
-            )
-        with col_date2:
-            st.session_state.end_date = st.date_input(
-                "📅 Date de retour",
-                value=st.session_state.end_date,
-                key="end_date_step1"
-            )
-    
-    st.session_state.interests = st.text_area(
-        "🎯 Centres d'intérêt (optionnel)",
-        value=st.session_state.interests,
-        placeholder="Ex: culture, gastronomie, aventure...",
-        height=100,
-        key="interests_step1"
-    )
-    
-    st.session_state.budget = st.select_slider(
-        "💰 Budget hébergement",
-        options=["économique", "moyen", "confort", "luxe"],
-        value=st.session_state.budget or "moyen",
-        key="budget_step1"
-    )
-    
-    st.markdown("---")
-    
-    col_btn1, col_btn2 = st.columns([3, 1])
-    with col_btn1:
-        if st.button("🚀 Générer mon voyage", type="primary", use_container_width=True, key="generate_trip"):
-            if not st.session_state.destination:
-                st.error("⚠️ Veuillez entrer une destination")
-            elif not st.session_state.start_date or not st.session_state.end_date:
-                st.error("⚠️ Veuillez sélectionner les dates")
-            elif st.session_state.start_date > st.session_state.end_date:
-                st.error("⚠️ La date de retour doit être après la date de départ")
-            else:
-                next_step()
-                st.rerun()
-    with col_btn2:
-        st.info(f"Étape {st.session_state.step}/5")
-
-# ============================================================
-# 🗺️ ÉTAPE 2 : CHOIX DE L'ITINÉRAIRE
-# ============================================================
-elif st.session_state.step == 2:
-    st.header("🗺️ Étape 2 : Choisissez votre itinéraire")
-    
-    if not st.session_state.itinerary_option_a:
-        with st.spinner("🤖 Les agents préparent vos options..."):
-            with st.expander("📝 Génération Option A", expanded=False):
-                response_a = ""
-                placeholder_a = st.empty()
-                for chunk in stream_itinerary(
-                    st.session_state.destination,
-                    st.session_state.start_date,
-                    st.session_state.end_date,
-                    st.session_state.interests,
-                    option_number=1
-                ):
-                    response_a += chunk
-                    placeholder_a.markdown(response_a + "▌")
-                st.session_state.itinerary_option_a = response_a
-            
-            with st.expander("📝 Génération Option B", expanded=False):
-                response_b = ""
-                placeholder_b = st.empty()
-                for chunk in stream_itinerary(
-                    st.session_state.destination,
-                    st.session_state.start_date,
-                    st.session_state.end_date,
-                    st.session_state.interests,
-                    option_number=2
-                ):
-                    response_b += chunk
-                    placeholder_b.markdown(response_b + "▌")
-                st.session_state.itinerary_option_b = response_b
-            
-            st.session_state.comparison = "✅ Deux options générées avec succès"
-            st.session_state.profile_generated = True
+# -----------------------------------------------------------------------------
+# 🤖 LLM WRAPPER (Groq + OpenAI compatibles)
+# -----------------------------------------------------------------------------
+def call_llm(messages, temperature=0.7, provider="groq"):
+    """Appel LLM avec gestion d'erreurs et support multi-fournisseurs"""
+    if not st.session_state.get("api_key"):
+        return None
         
-        st.success("✅ Itinéraires générés !")
-        st.rerun()
-    
-    st.markdown("### 📊 Comparez les 2 options")
-    if st.session_state.comparison:
-        st.info(f"📝 {st.session_state.comparison}")
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("#### 🅰️ Option A")
-        st.markdown(st.session_state.itinerary_option_a)
-        if st.button("✅ Choisir l'Option A", type="primary", use_container_width=True, key="choose_option_a"):
-            st.session_state.selected_option = "A"
-            next_step()
-            st.rerun()
-    
-    with col_b:
-        st.markdown("#### 🅱️ Option B")
-        st.markdown(st.session_state.itinerary_option_b)
-        if st.button("✅ Choisir l'Option B", type="primary", use_container_width=True, key="choose_option_b"):
-            st.session_state.selected_option = "B"
-            next_step()
-            st.rerun()
-    
-    if st.button("🔄 Régénérer les options", key="regenerate_options"):
-        st.session_state.itinerary_option_a = None
-        st.session_state.itinerary_option_b = None
-        st.session_state.comparison = None
-        st.rerun()
-
-# ============================================================
-# 🚄 ÉTAPE 3 : TRANSPORT
-# ============================================================
-elif st.session_state.step == 3:
-    st.header("🚄 Étape 3 : Options de transport")
-    
-    if not st.session_state.transport_content:
-        with st.spinner("🤖 L'agent transport recherche les meilleures options..."):
-            response = ""
-            placeholder = st.empty()
-            for chunk in stream_transport(
-                st.session_state.destination,
-                st.session_state.start_date,
-                st.session_state.end_date,
-                st.session_state.origin
-            ):
-                response += chunk
-                placeholder.markdown(response + "▌")
-            st.session_state.transport_content = response
-            st.session_state.transport_generated = True
-        st.success("✅ Options de transport générées !")
-        st.rerun()
-    
-    st.markdown(st.session_state.transport_content)
-    st.markdown("---")
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown("💡 **Conseil** : Cliquez sur les liens pour réserver directement")
-    with col2:
-        if st.button("✅ Valider & Continuer", type="primary", use_container_width=True, key="validate_transport"):
-            next_step()
-            st.rerun()
-    
-    if st.button("🔄 Régénérer", key="regenerate_transport"):
-        st.session_state.transport_content = None
-        st.session_state.transport_generated = False
-        st.rerun()
-
-# ============================================================
-# 🏨 ÉTAPE 4 : HÉBERGEMENT
-# ============================================================
-elif st.session_state.step == 4:
-    st.header("🏨 Étape 4 : Options d'hébergement")
-    
-    if not st.session_state.hotel_content:
-        with st.spinner("🤖 L'agent hôtel trouve les meilleurs quartiers..."):
-            response = ""
-            placeholder = st.empty()
-            for chunk in stream_hotel(
-                st.session_state.destination,
-                st.session_state.start_date,
-                st.session_state.end_date,
-                st.session_state.budget
-            ):
-                response += chunk
-                placeholder.markdown(response + "▌")
-            st.session_state.hotel_content = response
-            st.session_state.hotel_generated = True
-        st.success("✅ Options d'hébergement générées !")
-        st.rerun()
-    
-    st.markdown(st.session_state.hotel_content)
-    st.markdown("---")
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.markdown("💡 **Conseil** : Réservez tôt pour les meilleurs prix")
-    with col2:
-        if st.button("✅ Valider & Continuer", type="primary", use_container_width=True, key="validate_hotel"):
-            next_step()
-            st.rerun()
-    
-    if st.button("🔄 Régénérer", key="regenerate_hotel"):
-        st.session_state.hotel_content = None
-        st.session_state.hotel_generated = False
-        st.rerun()
-
-# ============================================================
-# 📤 ÉTAPE 5 : EXPORT & CONFIRMATION
-# ============================================================
-elif st.session_state.step == 5:
-    st.header("📤 Étape 5 : Export et confirmation")
-    
-    if not st.session_state.export_content:
-        with st.spinner("🤖 Préparation de votre document de voyage..."):
-            selected_itinerary = (
-                st.session_state.itinerary_option_a 
-                if st.session_state.selected_option == "A" 
-                else st.session_state.itinerary_option_b
-            )
-            st.session_state.export_content = export_agent(
-                st.session_state.destination,
-                selected_itinerary,
-                st.session_state.transport_content,
-                st.session_state.hotel_content,
-                st.session_state.user_name,
-                st.session_state.user_email
-            )
-            st.session_state.email_content = email_agent(
-                st.session_state.destination,
-                selected_itinerary[:500],
-                st.session_state.user_name
-            )
-            st.session_state.export_ready = True
-        st.success("✅ Document prêt !")
-        st.rerun()
-    
-    st.markdown("### 📋 Résumé de votre voyage")
-    with st.expander("📄 Voir le document complet", expanded=True):
-        st.markdown(st.session_state.export_content)
-    
-    st.markdown("---")
-    st.markdown("### 📥 Options de téléchargement")
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        pdf_content = generate_pdf(
-            st.session_state.export_content,
-            st.session_state.destination
+    try:
+        client = openai.OpenAI(
+            api_key=st.session_state.api_key,
+            base_url=BASE_URLS.get(provider, "https://api.groq.com/openai/v1")
         )
-        create_download_button(
-            pdf_content,
-            f"voyage_{st.session_state.destination.replace(' ', '_')}.txt",
-            "📥 Télécharger (.txt)"
+        
+        response = client.chat.completions.create(
+            model=MODELS.get(provider, "llama-3.3-70b-versatile"),
+            messages=messages,
+            temperature=temperature,
+            response_format={"type": "text"}
         )
+        return response.choices[0].message.content.strip()
+        
+    except openai.RateLimitError:
+        st.error("⚠️ Quota dépassé !")
+        st.info("💡 Attendez quelques minutes ou vérifiez votre plan sur le dashboard du fournisseur.")
+        return None
+    except openai.AuthenticationError:
+        st.error("🔑 Clé API invalide. Vérifiez-la dans la sidebar.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Erreur LLM: {type(e).__name__}: {str(e)[:150]}")
+        return None
+
+# -----------------------------------------------------------------------------
+# 🧠 TECHNIQUE 1 : ReAct + Chain of Thought (CoT)
+# -----------------------------------------------------------------------------
+def react_cot_loop(initial_prompt, max_steps=4, provider="groq"):
+    """
+    Boucle ReAct avec CoT explicite :
+    Thought: [raisonnement étape par étape]
+    Action: [nom_outil]
+    Action Input: {'json'}
+    Observation: [résultat]
+    """
+    history = [{"role": "system", "content": initial_prompt}]
+    steps = []
     
-    with col2:
-        if st.button("📧 Envoyer par email", type="primary", use_container_width=True, key="send_email"):
-            if st.session_state.user_email:
-                subject, body = prepare_email_content(st.session_state.email_content)
-                result = send_email_simulation(
-                    st.session_state.user_email,
-                    subject,
-                    body
-                )
-                if result["success"]:
-                    st.success(result["message"])
-                    st.session_state.email_sent = True
+    for step in range(max_steps):
+        # Prompt avec format strict (quotes simples pour éviter les erreurs f-string)
+        prompt_text = (f"Étape {step+1}. Réponds STRICTEMENT au format:\n"
+                      f"Thought: [ton raisonnement]\n"
+                      f"Action: [get_weather ou autre]\n"
+                      f"Action Input: {{'key': 'value'}}\n"
+                      f"(ou Final Answer: [ta réponse] si terminé)")
+        history.append({"role": "user", "content": prompt_text})
+        
+        response = call_llm(history, provider=provider)
+        if not response:
+            break
+            
+        history.append({"role": "assistant", "content": response})
+        
+        # Parsing des composants ReAct
+        thought_match = re.search(r"Thought:\s*(.*?)(?:\nAction:|\nFinal Answer:|$)", response, re.DOTALL)
+        action_match = re.search(r"Action:\s*(.*?)(?:\nAction Input:|\nFinal Answer:|$)", response, re.DOTALL)
+        input_match = re.search(r"Action Input:\s*(.*?)(?:\nObservation:|\nFinal Answer:|$)", response, re.DOTALL)
+        final_match = re.search(r"Final Answer:\s*(.*)", response, re.DOTALL)
+        
+        step_info = {
+            "thought": thought_match.group(1).strip() if thought_match else "",
+            "action": action_match.group(1).strip() if action_match else None
+        }
+        
+        # Si réponse finale, on retourne
+        if final_match:
+            step_info["final"] = final_match.group(1).strip()
+            steps.append(step_info)
+            return step_info["final"], steps
+            
+        # Si action, on l'exécute
+        if action_match and input_match:
+            tool_name = action_match.group(1).strip()
+            try:
+                # Nettoyage et parsing JSON (support simple/double quotes)
+                input_str = input_match.group(1).strip().replace("'", '"')
+                tool_input = json.loads(input_str)
+            except json.JSONDecodeError:
+                tool_input = {"query": input_match.group(1).strip()}
+                
+            # Exécution de l'outil
+            if tool_name == "get_weather":
+                try:
+                    obs = get_weather(
+                        tool_input.get("city", ""),
+                        tool_input.get("start_date", ""),
+                        tool_input.get("end_date", "")
+                    )
+                    obs_str = json.dumps(obs, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    obs_str = f"Erreur météo: {str(e)}"
             else:
-                st.error("⚠️ Veuillez entrer votre email dans la sidebar")
-    
-    with col3:
-        if st.button("🔄 Nouveau voyage", use_container_width=True, key="new_trip_step5"):
-            reset_session()
-            st.rerun()
-    
-    if st.session_state.email_sent:
-        st.success("✅ Email envoyé avec succès ! Vérifiez votre boîte de réception.")
-    
-    st.markdown("---")
-    st.markdown("""
-    <div style="text-align: center; color: gray;">
-        <p>Merci d'avoir utilisé Travel Planner AI ! ✈️</p>
-        <p>LLaMA 3.1 via Groq | Multi-Agents IA | Streaming en temps réel</p>
-    </div>
-    """, unsafe_allow_html=True)
+                obs_str = f"Outil '{tool_name}' non implémenté."
+                
+            step_info["observation"] = obs_str
+            history.append({"role": "user", "content": f"Observation: {obs_str}"})
+        else:
+            step_info["observation"] = "⚠️ Format invalide. Réessaie avec Thought/Action/Input."
+            
+        steps.append(step_info)
+        
+    return "⚠️ Limite d'étapes atteinte. Données partielles :", steps
 
-# ============================================================
-# 🎨 FOOTER GLOBAL
-# ============================================================
-st.markdown("---")
-st.caption("🌍 Travel Planner AI - Projet Agent IA | Powered by Groq & LLaMA 3.1")
+# -----------------------------------------------------------------------------
+# 🌳 TECHNIQUE 2 : Tree of Thoughts (ToT)
+# -----------------------------------------------------------------------------
+def tree_of_thoughts(weather_data, user_prefs, num_branches=3, provider="groq"):
+    """Génère N pistes d'itinéraires, les évalue, garde la meilleure (élagage)"""
+    
+    # Génération des branches
+    gen_prompt = f"""
+    Tu es un expert en planification de voyage.
+    Météo prévue pour {weather_data.get('city', 'la destination')}: 
+    {json.dumps({k: v[:3] if isinstance(v, list) else v for k, v in weather_data.items()}, ensure_ascii=False, indent=2)}
+    
+    Préférences utilisateur: {user_prefs}
+    
+    Génère exactement {num_branches} propositions d'itinéraires concis.
+    Format de retour STRICT (JSON valide uniquement):
+    [
+      {{"id": 1, "theme": "Nom du thème", "days": [{{"day": 1, "activity": "...", "reason": "adapté car..."}}, ...]}},
+      ...
+    ]
+    """
+    
+    json_str = call_llm(
+        [{"role": "system", "content": "Réponds UNIQUEMENT avec un tableau JSON valide, sans texte avant/après."},
+         {"role": "user", "content": gen_prompt}],
+        temperature=0.9,
+        provider=provider
+    )
+    
+    if not json_str:
+        return {"id": 1, "theme": "Itinéraire par défaut", "days": []}, [], []
+    
+    # Nettoyage du JSON
+    json_str = re.sub(r"```json\n?|```", "", json_str).strip()
+    
+    try:
+        candidates = json.loads(json_str)
+    except json.JSONDecodeError:
+        # Fallback minimal
+        return {"id": 1, "theme": "Itinéraire standard", "days": [{"day": 1, "activity": "Visite libre", "reason": "Flexible"}]}, [], []
+    
+    # Évaluation & élagage (ToT)
+    eval_prompt = f"""
+    Évalue ces {num_branches} propositions d'itinéraires sur 10 selon:
+    1. Adaptation à la météo réelle
+    2. Diversité des activités
+    3. Réalisme logistique
+    
+    Retourne UNIQUEMENT ce JSON:
+    [{{"id": x, "score": y, "raison": "court commentaire"}}, ...]
+    """
+    
+    eval_json = call_llm(
+        [{"role": "system", "content": "JSON uniquement, tableau de scores."},
+         {"role": "user", "content": eval_prompt}],
+        provider=provider
+    )
+    
+    if eval_json:
+        eval_json = re.sub(r"```json\n?|```", "", eval_json).strip()
+        try:
+            evaluations = json.loads(eval_json)
+            best = max(evaluations, key=lambda x: x.get("score", 0))
+            best_candidate = next((c for c in candidates if c["id"] == best["id"]), candidates[0])
+            return best_candidate, candidates, evaluations
+        except:
+            pass
+    
+    return candidates[0] if candidates else {"days": []}, candidates, []
+
+# -----------------------------------------------------------------------------
+# 🔄 TECHNIQUE 3 : Self-Correction (Réflexion critique)
+# -----------------------------------------------------------------------------
+def self_correction(best_draft, weather_data, provider="groq"):
+    """Critique le brouillon, détecte erreurs, régénère une version corrigée"""
+    
+    # Phase 1: Critique
+    critique_prompt = f"""
+    Itinéraire à critiquer: {json.dumps(best_draft, ensure_ascii=False, indent=2)}
+    Météo réelle: {json.dumps(weather_data, ensure_ascii=False, indent=2)}
+    
+    Trouve 2-3 problèmes potentiels:
+    - Activités incompatibles avec la météo (ex: plage sous la pluie)
+    - Rythme trop dense ou logistique impossible
+    - Oublis (repas, transports, réservations)
+    
+    Retourne UNIQUEMENT ce JSON:
+    {{"critiques": ["problème 1", "..."], "suggestions": ["solution 1", "..."], "valide": true/false}}
+    """
+    
+    critique_json = call_llm(
+        [{"role": "system", "content": "JSON uniquement."},
+         {"role": "user", "content": critique_prompt}],
+        provider=provider
+    )
+    
+    critique = {"critiques": [], "suggestions": [], "valide": True}
+    if critique_json:
+        critique_json = re.sub(r"```json\n?|```", "", critique_json).strip()
+        try:
+            critique = json.loads(critique_json)
+        except:
+            pass
+    
+    # Si valide, on garde le brouillon
+    if critique.get("valide", True) and not critique.get("critiques"):
+        return best_draft, critique
+    
+    # Phase 2: Régénération corrigée
+    fix_prompt = f"""
+    Itinéraire initial: {json.dumps(best_draft, ensure_ascii=False, indent=2)}
+    Critiques reçues: {json.dumps(critique, ensure_ascii=False, indent=2)}
+    Météo à respecter: {json.dumps(weather_data, ensure_ascii=False, indent=2)}
+    
+    Réécris l'itinéraire FINAL en corrigeant TOUTES les critiques.
+    Format JSON STRICT:
+    {{
+      "city": "nom ville",
+      "duration_days": 3,
+      "itinerary": [
+        {{"day": 1, "weather": "description", "morning": "...", "afternoon": "...", "evening": "...", "transport": "...", "notes": "..."}},
+        ...
+      ]
+    }}
+    """
+    
+    final_json = call_llm(
+        [{"role": "system", "content": "JSON valide uniquement, pas de texte supplémentaire."},
+         {"role": "user", "content": fix_prompt}],
+        temperature=0.3,  # Plus déterministe pour la correction
+        provider=provider
+    )
+    
+    if final_json:
+        final_json = re.sub(r"```json\n?|```", "", final_json).strip()
+        try:
+            return json.loads(final_json), critique
+        except:
+            pass
+    
+    # Fallback: retourne le brouillon original
+    return best_draft, critique
+
+# -----------------------------------------------------------------------------
+# 🧩 ORCHESTRATION PRINCIPALE
+# -----------------------------------------------------------------------------
+def run_travel_agent(user_input, provider="groq"):
+    """Pipeline complet : ReAct → ToT → Self-Correction → Résultat"""
+    
+    if not st.session_state.get("api_key"):
+        return "⚠️ Veuillez entrer votre clé API dans la barre latérale.", None, None
+    
+    # Extraction basique des paramètres (à améliorer avec NLP)
+    city = "Paris"
+    city_match = re.search(r"(?:à|pour|vers|depuis)\s+([A-Za-zÀ-ÿ\s]+?)(?:\s+(?:du|le|\d)|$)", user_input)
+    if city_match:
+        city = city_match.group(1).strip()
+    
+    # Dates par défaut : aujourd'hui + 4 jours
+    today = datetime.now()
+    start_date = (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_date = (today + timedelta(days=5)).strftime("%Y-%m-%d")
+    
+    date_match = re.search(r"(\d{1,2})[/-](\d{1,2})", user_input)
+    if date_match:
+        d, m = date_match.groups()
+        start_date = f"{today.year}-{m.zfill(2)}-{d.zfill(2)}"
+        end_date = (datetime.strptime(start_date, "%Y-%m-%d") + timedelta(days=4)).strftime("%Y-%m-%d")
+    
+    prefs = re.sub(r"(?:planifie|voyage|destination|météo|activité).*", "", user_input, flags=re.IGNORECASE).strip()
+    if not prefs or len(prefs) < 10:
+        prefs = "Culture, nature, gastronomie, détente"
+    
+    # 1️⃣ ReAct + CoT : Collecte météo
+    st.info("🔍 Étape 1/4: ReAct + Chain of Thought (collecte données)")
+    react_prompt = f"""
+    Tu es un agent de voyage. Ta première tâche : récupérer la météo de {city} 
+    du {start_date} au {end_date} pour adapter les activités.
+    
+    Utilise l'outil 'get_weather' avec ce format exact:
+    Thought: [analyse de la demande]
+    Action: get_weather
+    Action Input: {{"city": "{city}", "start_date": "{start_date}", "end_date": "{end_date}"}}
+    """
+    
+    collected_data, react_steps = react_cot_loop(react_prompt, provider=provider)
+    
+    # Extraction des données météo depuis les steps
+    weather_data = None
+    for step in react_steps:
+        obs = step.get("observation", "")
+        try:
+            data = json.loads(obs) if obs.startswith("{") else None
+            if data and "city" in data:
+                weather_data = data
+                break
+        except:
+            continue
+    
+    if not weather_data:
+        # Fallback météo simulée pour démo
+        weather_data = {
+            "city": city, "dates": [start_date],
+            "temp_max": [20, 22, 19, 21, 23],
+            "weather_code": [1, 2, 61, 2, 0],
+            "precipitation": [0, 0, 5, 0, 0]
+        }
+        st.warning("⚠️ Météo simulée (API indisponible)")
+    
+    # 2️⃣ Tree of Thoughts : Génération & sélection
+    st.info("🌳 Étape 2/4: Tree of Thoughts (génération de pistes)")
+    best_draft, branches, evaluations = tree_of_thoughts(weather_data, prefs, provider=provider)
+    
+    # 3️⃣ Self-Correction : Critique & amélioration
+    st.info("🔄 Étape 3/4: Self-Correction (vérification qualité)")
+    final_itinerary, critique = self_correction(best_draft, weather_data, provider=provider)
+    
+    # 4️⃣ Formatage
+    st.success("✅ Étape 4/4: Itinéraire finalisé")
+    
+    reasoning_trace = {
+        "react_steps": react_steps,
+        "tot_evaluations": evaluations,
+        "self_correction": critique
+    }
+    
+    return f"🎉 Itinéraire prêt pour {city} !", final_itinerary, reasoning_trace
+
+# -----------------------------------------------------------------------------
+# 💻 INTERFACE STREAMLIT
+# -----------------------------------------------------------------------------
+st.title("🌍 Planificateur de Voyage Autonome")
+st.caption("Agent LLM avec ReAct • Chain of Thought • Tree of Thoughts • Self-Correction")
+
+# Initialisation session
+if "conversation" not in st.session_state:
+    st.session_state.conversation = []
+if "current_itinerary" not in st.session_state:
+    st.session_state.current_itinerary = None
+
+# Affichage historique chat
+for msg in st.session_state.conversation:
+    with st.chat_message(msg["role"]):
+        if msg.get("itinerary_preview"):
+            st.markdown("### 🗺️ Aperçu itinéraire")
+            for day in msg["itinerary_preview"].get("itinerary", [])[:2]:  # Aperçu 2 premiers jours
+                st.markdown(f"**Jour {day.get('day')}** | {day.get('weather', '')}")
+                st.markdown(f"- 🌅 {day.get('morning', '')}")
+        if msg.get("content"):
+            st.markdown(msg["content"])
+
+# Zone de saisie
+placeholder = "Ex: Planifie un week-end à Bordeaux du 15-06, j'aime le vin et l'architecture"
+if prompt := st.chat_input(placeholder):
+    # Message utilisateur
+    st.session_state.conversation.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    
+    # Réponse agent
+    with st.chat_message("assistant"):
+        with st.spinner("🤖 Agent en réflexion (ReAct → ToT → Correction)..."):
+            response_text, itinerary, reasoning = run_travel_agent(prompt, provider=provider)
+            
+            st.markdown(response_text)
+            
+            # Affichage raisonnement (collapsible)
+            if reasoning and st.checkbox("🔍 Voir le raisonnement détaillé", value=False):
+                with st.expander("🧠 Traces de raisonnement"):
+                    st.markdown("#### 📝 ReAct + CoT")
+                    for i, step in enumerate(reasoning.get("react_steps", [])):
+                        st.markdown(f"**Étape {i+1}**: `{step.get('thought', '')[:100]}...`")
+                        if step.get("observation"):
+                            st.code(step["observation"][:200] + "...", language="json")
+                    
+                    st.markdown("#### 🌳 Tree of Thoughts")
+                    if reasoning.get("tot_evaluations"):
+                        st.json(reasoning["tot_evaluations"])
+                    
+                    st.markdown("#### 🔄 Self-Correction")
+                    st.json(reasoning.get("self_correction", {}))
+            
+            # Affichage itinéraire complet
+            if itinerary and itinerary.get("itinerary"):
+                st.markdown("### 📅 Itinéraire jour par jour")
+                for day in itinerary["itinerary"]:
+                    with st.container(border=True):
+                        st.markdown(f"**Jour {day.get('day')}** | {day.get('weather', 'Météo inconnue')}")
+                        col1, col2, col3 = st.columns(3)
+                        with col1: st.markdown(f"🌅 **Matin**\n\n{day.get('morning', '-')}")
+                        with col2: st.markdown(f"☀️ **Après-midi**\n\n{day.get('afternoon', '-')}")
+                        with col3: st.markdown(f"🌙 **Soirée**\n\n{day.get('evening', '-')}")
+                        if day.get("notes"):
+                            st.caption(f"📌 {day.get('notes')}")
+                
+                # Bouton téléchargement
+                md_content = f"# 🗺️ Itinéraire : {itinerary.get('city', 'Voyage')}\n\n"
+                for d in itinerary["itinerary"]:
+                    md_content += f"## Jour {d.get('day')} | {d.get('weather', '')}\n"
+                    md_content += f"- 🌅 Matin: {d.get('morning', '')}\n"
+                    md_content += f"- ☀️ Après-midi: {d.get('afternoon', '')}\n"
+                    md_content += f"- 🌙 Soirée: {d.get('evening', '')}\n"
+                    if d.get("notes"): md_content += f"- 📌 {d.get('notes')}\n"
+                    md_content += "\n"
+                
+                st.download_button(
+                    "📥 Télécharger l'itinéraire (.md)",
+                    data=md_content,
+                    file_name=f"itineraire_{itinerary.get('city', 'voyage')}.md",
+                    mime="text/markdown"
+                )
+                
+                # Sauvegarde dans l'historique
+                st.session_state.current_itinerary = itinerary
+            
+            # Sauvegarde conversation
+            st.session_state.conversation.append({
+                "role": "assistant",
+                "content": response_text,
+                "itinerary_preview": itinerary
+            })
+
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.caption("💡 **Astuce** : Groq = gratuit & rapide. Pour OpenAI, ajoutez un moyen de paiement sur platform.openai.com")
+st.sidebar.markdown("[📚 Docs techniques](https://docs.streamlit.io) | [🐛 Signaler un bug]")
