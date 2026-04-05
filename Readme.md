@@ -1,105 +1,66 @@
-# Travel Planner AI – Planificateur de Voyage Intelligent
+# 🌍 Planificateur de Voyage Autonome  
+### Projet IA Générative — Agents LLM & Raisonnement Avancé
 
-Un projet d’IA pour créer des voyages sur mesure en utilisant plusieurs agents spécialisés et le modèle LLaMA 3.1 via Groq.
-
----
-
-## Description
-
-Travel Planner AI permet à un utilisateur de générer un voyage personnalisé étape par étape. Le projet intègre plusieurs agents pour gérer :
-
-* Les centres d’intérêt du voyageur
-* La génération d’itinéraires
-* Les options de transport
-* Les suggestions d’hébergement
-* La création de documents PDF et d’e-mails de confirmation
-
-Le tout avec un **workflow interactif** et **streaming temps réel**.
+Ce projet propose un assistant de voyage intelligent capable de planifier un séjour complet grâce à des techniques modernes de raisonnement appliquées aux modèles de langage (LLM).  
+L’application fonctionne via une interface **Streamlit** et s’appuie sur plusieurs stratégies avancées : **ReAct**, **Chain of Thought**, **Tree of Thoughts**, et **Self‑Correction**.
 
 ---
 
-## Fonctionnalités
+## ✨ Fonctionnalités
 
-* Étape par étape : du choix de la destination à la confirmation finale
-* Génération de deux options d’itinéraire et comparaison automatique
-* Recherche de transport avec estimation du prix et durée
-* Suggestions d’hébergement selon le budget
-* Export PDF du voyage et génération d’e-mails
-* Streaming en temps réel des réponses des agents
-* Sauvegarde et réinitialisation du voyage
+### 🧠 Raisonnement avancé
+L’agent utilise plusieurs techniques complémentaires :
 
----
+- **ReAct (Reason + Act)**  
+  Le modèle réfléchit, choisit une action, appelle un outil (météo, vols), observe le résultat, puis continue son raisonnement.
 
-## Technologies
+- **Chain of Thought (CoT)**  
+  Le modèle décompose explicitement son raisonnement étape par étape.
 
-* Python 3.11+
-* [Streamlit](https://streamlit.io/) pour l’interface web
-* [Groq LLaMA 3.1](https://www.groq.com/) pour le modèle LLM
-* dotenv pour gérer les clés API
-* Fichiers `.env` pour les configurations
+- **Tree of Thoughts (ToT)**  
+  Génération de plusieurs itinéraires candidats → évaluation → sélection du meilleur.
+
+- **Self‑Correction**  
+  L’agent critique son propre itinéraire et génère une version corrigée.
 
 ---
 
-## Installation
+## 🧳 Capacités de l’assistant
 
-Installer les dépendances Python :
+- Analyse de la demande utilisateur  
+- Récupération de la météo réelle via API  
+- Recherche de vols simulés  
+- Génération d’activités adaptées au climat  
+- Création d’un itinéraire jour par jour  
+- Téléchargement du planning final  
+- Affichage des traces de raisonnement (ReAct)
 
-```bash
+---
+
+## 📁 Structure du projet
+
+📦 Projet  
+┣ 📜 app.py — Interface Streamlit  
+┣ 📜 orchestrator.py — Orchestration ReAct / ToT / Self-Correction  
+┣ 📜 reasoning.py — Implémentation des techniques de raisonnement  
+┣ 📜 tools.py — Outils externes (météo, vols)  
+┣ 📜 llm.py — Appels LLM unifiés  
+┣ 📜 config.py — Configuration des modèles et endpoints  
+┗ 📜 README.md  
+
+---
+
+## 🔧 Installation
+
+### 1. Cloner le projet
+
+
+
+# Installer les dépendances
 pip install -r requirements.txt
-```
 
----
-
-## Utilisation
-
-Lancer l'application Streamlit :
-
-```bash
+# Lancer l’application
 streamlit run app.py
-```
-
----
-
-## Architecture du projet
-
-TravelPlannerAI/
-│
-├─ app.py              # Interface principale Streamlit
-├─ agent.py            # Agents et orchestration (profil, itinéraire, transport, hôtel, export)
-├─ prompts.py          # Prompts LLM pour chaque agent
-├─ llm.py              # Communication avec LLM Groq et gestion du streaming
-├─ utils.py            # Fonctions utilitaires (session, PDF, email, navigation)
-├─ requirements.txt    # Dépendances Python
-├─ .env                # Clés API et configuration
-└─ README.md           # Documentation du projet
-
----
-
-## Agents utilisés
-
-* Profil agent
-* Planificateur agent
-* Transport agent
-* Hôtel agent
-* Export agent (PDF & Email)
-
----
-
-## Streaming
-
-Toutes les réponses des agents peuvent être affichées en temps réel via le streaming pour une meilleure expérience utilisateur.
-
----
-
-## Contribution
-
-Contributions ouvertes via pull requests sur le dépôt GitHub.
-
----
-
-## Licence
-
-MIT License
 
 ---
 

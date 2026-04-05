@@ -29,29 +29,45 @@ def run_agent(user_input, provider="groq"):
         start = f"{today.year}-{m.zfill(2)}-{d.zfill(2)}"
         end = (datetime.strptime(start, "%Y-%m-%d") + timedelta(days=4)).strftime("%Y-%m-%d")
 
-    # Préférences utilisateur
-    prefs = re.sub(r"(planifie|montre|vol|billet|météo|voyage|destination|activité).*", "", user_input, flags=re.IGNORECASE).strip()
+    # Préférences utilisateur (pour l'itinéraire / activités)
+    prefs = re.sub(
+        r"(planifie|montre|vol|billet|météo|voyage|destination|activité).*",
+        "",
+        user_input,
+        flags=re.IGNORECASE
+    ).strip()
     if not prefs:
         prefs = "Culture, nature, gastronomie, détente"
 
     # Prompt système pour ReAct
     system_prompt = f"""
 Tu es un agent de voyage expert.
-Outils disponibles: get_weather (météo), search_flights (vols)
-RÈGLE: Si l'utilisateur demande des vols → utilise search_flights.
-Sinon → get_weather + génération itinéraire.
-Format strict: Thought → Action → Action Input → Observation → Final Answer
+
+Outils disponibles:
+- get_weather(city, start_date, end_date) → météo réelle
+- search_flights(origin, destination, date, return_date, cabin) → vols simulés
+
+RÈGLES:
+- Si l'utilisateur demande des vols → utilise search_flights.
+- Sinon → utilise get_weather pour récupérer la météo puis prépare un itinéraire.
+
+Format strict:
+Thought: ...
+Action: get_weather ou search_flights ou none
+Action Input: {{...}}
+Observation: ...
+(ou Final Answer: ... si terminé)
 """
 
     st.info("🔍 Étape 1/4: ReAct + Chain of Thought")
-    final_ans, steps = react_cot_loop(system_prompt, provider=provider)
+    final_ans, steps = react_cot_loop(system_prompt, user_input, provider=provider)
 
     # Extraction des données météo depuis les steps
     weather_data = None
     for step in steps:
         try:
             obs = json.loads(step.get("observation", "{}"))
-            if "city" in obs and "temp_max" in obs:
+            if isinstance(obs, dict) and "city" in obs and "temp_max" in obs:
                 weather_data = obs
                 break
         except:
@@ -68,16 +84,17 @@ Format strict: Thought → Action → Action Input → Observation → Final Ans
 
     result_data = None
     if is_flight_req:
-        # Recherche de vol
+        # Recherche de vol (via ReAct si possible, sinon fallback)
         try:
             json_match = re.search(r'\{[\s\S]*"outbound"[\s\S]*\}', final_ans)
             result_data = json.loads(json_match.group()) if json_match else search_flights("Paris", city, start, end, "economy")
         except:
-            result_data = {"error": "Format de vol invalide"}
+            result_data = search_flights("Paris", city, start, end, "economy")
     else:
-        # Génération itinéraire
+        # Génération itinéraire (ToT + Self-Correction)
         st.info("🌳 Étape 2/4: Tree of Thoughts")
         best_draft, _, _ = tree_of_thoughts(weather_data, prefs, provider=provider)
+
         st.info("🔄 Étape 3/4: Self-Correction")
         result_data, critique = self_correction(best_draft, weather_data, provider=provider)
         result_data["critique"] = critique
